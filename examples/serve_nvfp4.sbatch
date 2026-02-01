@@ -12,7 +12,7 @@
 set -e
 
 BASE_DIR=/lustre/fsw/portfolios/general/users/asteiner
-MODEL_PATH=${MODEL_PATH:-${BASE_DIR}/Kimi-K2.5-NVFP4-STREAM}
+MODEL_PATH=${MODEL_PATH:-${BASE_DIR}/Kimi-K2.5-NVFP4-STREAM-20260201_085524}
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-kimi-k2.5-nvfp4}
 SERVER_PORT=${SERVER_PORT:-8000}
 TP_SIZE=${TP_SIZE:-4}
@@ -28,8 +28,17 @@ echo ""
 
 # Use official vLLM Docker image (nightly build with all dependencies)
 srun --container-image=docker://vllm/vllm-openai:nightly \
-     --container-mounts=${BASE_DIR}:${BASE_DIR},/home/asteiner:/home/asteiner \
+     --container-mounts=${BASE_DIR}:${BASE_DIR} \
      bash -c "
+# Redirect all cache directories to Lustre to avoid /home quota
+export VLLM_COMPILE_MODE=none
+export TORCHINDUCTOR_CACHE_DIR=${BASE_DIR}/.cache/torch_compile
+export HF_HOME=${BASE_DIR}/.cache/huggingface
+export TRANSFORMERS_CACHE=${BASE_DIR}/.cache/huggingface
+export VLLM_CACHE_ROOT=${BASE_DIR}/.cache/vllm
+export XDG_CACHE_HOME=${BASE_DIR}/.cache
+export PIP_CACHE_DIR=${BASE_DIR}/.cache/pip
+
 echo '=== Starting vLLM server ==='
 echo 'Server will be available at http://'\$(hostname)':${SERVER_PORT}'
 echo 'Model: ${MODEL_PATH}'

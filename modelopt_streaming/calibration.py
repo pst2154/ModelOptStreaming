@@ -241,7 +241,17 @@ class StreamingCalibrator:
                     # This is a heuristic: activations typically have similar magnitude to weights
                     amax = tensor.abs().max().item()
                     submodule_name = key.split(".")[-2]  # e.g., "down_proj"
-                    layer_stats[submodule_name] = amax
+                    if submodule_name not in layer_stats:
+                        layer_stats[submodule_name] = amax
+                    else:
+                        layer_stats[submodule_name] = max(layer_stats[submodule_name], amax)
+            
+            # CRITICAL FIX: vLLM requires w1_weight_scale_2 == w3_weight_scale_2
+            # Use max(gate_proj, up_proj) scale for both to satisfy this constraint
+            if "gate_proj" in layer_stats and "up_proj" in layer_stats:
+                unified_scale = max(layer_stats["gate_proj"], layer_stats["up_proj"])
+                layer_stats["gate_proj"] = unified_scale
+                layer_stats["up_proj"] = unified_scale
             
             all_layer_stats[f"layer_{layer_idx}"] = layer_stats
             
