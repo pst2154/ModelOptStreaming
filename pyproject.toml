@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modelopt-streaming"
+version = "0.1.0"
+description = "Memory-efficient streaming quantization for large language models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+keywords = ["quantization", "llm", "nvfp4", "streaming", "memory-efficient"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.0.0",
+    "safetensors>=0.4.0",
+    "tqdm>=4.65.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+modelopt-streaming = "modelopt_streaming.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/ModelOptStreaming"
+Documentation = "https://github.com/yourusername/ModelOptStreaming#readme"
+Repository = "https://github.com/yourusername/ModelOptStreaming"
+Issues = "https://github.com/yourusername/ModelOptStreaming/issues"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
