@@ -5,6 +5,7 @@ import sys
 
 from .quantizer import StreamingQuantizer
 from .formats import QuantizationFormat
+from .decompress import decompress_model_incremental
 
 
 def main():
@@ -14,14 +15,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic NVFP4 quantization (MLP weights only)
+  # NVFP4 quantization (MLP weights only)
   modelopt-streaming quantize --input_dir ./model-bf16 --output_dir ./model-nvfp4
 
   # Quantize all linear weights
   modelopt-streaming quantize --input_dir ./model-bf16 --output_dir ./model-nvfp4 --all_linear
 
-  # Resume interrupted quantization
-  modelopt-streaming quantize --input_dir ./model-bf16 --output_dir ./model-nvfp4 --resume
+  # INT4 decompression to BF16
+  modelopt-streaming decompress --input_dir ./model-int4 --output_dir ./model-bf16
 """
     )
     
@@ -94,6 +95,35 @@ Examples:
         help="HuggingFace dataset for calibration (default: cnn_dailymail)"
     )
     
+    # Decompress command
+    decompress_parser = subparsers.add_parser("decompress", help="Decompress INT4 model to BF16")
+    decompress_parser.add_argument(
+        "--input_dir",
+        required=True,
+        help="Path to input INT4 (compressed-tensors) model directory"
+    )
+    decompress_parser.add_argument(
+        "--output_dir",
+        required=True,
+        help="Path to output BF16 model directory"
+    )
+    decompress_parser.add_argument(
+        "--num_gpus",
+        type=int,
+        default=4,
+        help="Number of GPUs to use for decompression (default: 4)"
+    )
+    decompress_parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Remove existing output and start fresh"
+    )
+    decompress_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress progress output"
+    )
+    
     args = parser.parse_args()
     
     if args.command is None:
@@ -119,6 +149,19 @@ Examples:
         
         try:
             quantizer.run()
+        except Exception as e:
+            print(f"\nERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    elif args.command == "decompress":
+        try:
+            decompress_model_incremental(
+                model_path=args.input_dir,
+                output_path=args.output_dir,
+                num_gpus=args.num_gpus,
+                fresh=args.fresh,
+                verbose=not args.quiet,
+            )
         except Exception as e:
             print(f"\nERROR: {e}", file=sys.stderr)
             sys.exit(1)

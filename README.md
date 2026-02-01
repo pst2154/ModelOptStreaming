@@ -1,8 +1,8 @@
 # ModelOptStreaming
 
-**Fast, memory-efficient streaming quantization for large language models.**
+**Fast, memory-efficient streaming quantization and decompression for large language models.**
 
-ModelOptStreaming converts large BF16/FP16 models to quantized formats (NVFP4, FP8, INT4) by processing safetensors shards one at a time, avoiding the memory overhead and complexity of full model instantiation.
+ModelOptStreaming converts large BF16/FP16 models to quantized formats (NVFP4, FP8, INT4) and decompresses INT4 models back to BF16 by processing safetensors shards one at a time, avoiding the memory overhead and complexity of full model instantiation.
 
 ## Why ModelOptStreaming?
 
@@ -21,13 +21,19 @@ ModelOptStreaming solves this by:
 
 ## Features
 
+### Quantization (BF16 → NVFP4)
 - **NVFP4 quantization**: Weight-only NVFP4 (MLP-only or all-linear)
 - **Streaming calibration**: Optional layer-by-layer calibration for better accuracy
 - **Memory efficient**: Process 684B models with <100GB RAM
 - **Fast**: 10-15 minutes (weight-only) or 30-45 minutes (with calibration)
-- **Robust**: Automatic resume, incremental saving
-- **Flexible**: MLP-only, attention-only, or full quantization
 - **Compatible**: Outputs work with vLLM (`--quantization compressed_tensors`)
+
+### Decompression (INT4 → BF16)
+- **GPU-accelerated decompression**: Fast INT4 to BF16 unpacking
+- **Multi-GPU support**: Parallel processing across multiple GPUs
+- **Memory efficient**: Incremental shard-by-shard decompression
+- **Resume support**: Continue interrupted decompression runs
+- **Robust**: Handles compressed-tensors format with group quantization
 
 ## Quick Start
 
@@ -69,14 +75,20 @@ modelopt-streaming quantize \
 vllm serve /path/to/model-nvfp4 \
   --quantization compressed_tensors \
   -tp 4
+
+# Decompress INT4 model back to BF16
+modelopt-streaming decompress \
+  --input_dir /path/to/model-int4 \
+  --output_dir /path/to/model-bf16 \
+  --num_gpus 4
 ```
 
 ### Python API
 
 ```python
-from modelopt_streaming import StreamingQuantizer
+from modelopt_streaming import StreamingQuantizer, decompress_model_incremental
 
-# Weight-only quantization (fast)
+# Quantization: Weight-only (fast)
 quantizer = StreamingQuantizer(
     input_dir="/path/to/model-bf16",
     output_dir="/path/to/model-nvfp4",
@@ -86,7 +98,7 @@ quantizer = StreamingQuantizer(
 )
 quantizer.run()
 
-# With calibration (better accuracy)
+# Quantization: With calibration (better accuracy)
 quantizer = StreamingQuantizer(
     input_dir="/path/to/model-bf16",
     output_dir="/path/to/model-nvfp4",
@@ -98,6 +110,15 @@ quantizer = StreamingQuantizer(
     calib_dataset="cnn_dailymail"
 )
 quantizer.run()
+
+# Decompression: INT4 → BF16
+decompress_model_incremental(
+    model_path="/path/to/model-int4",
+    output_path="/path/to/model-bf16",
+    num_gpus=4,
+    fresh=False,  # Resume from partial decompression
+    verbose=True
+)
 ```
 
 ## Supported Formats
