@@ -66,7 +66,13 @@ Examples:
     quantize_parser.add_argument(
         "--device",
         default="cuda:0",
-        help="CUDA device for quantization (default: cuda:0)"
+        help="CUDA device for quantization in single-GPU mode (default: cuda:0)"
+    )
+    quantize_parser.add_argument(
+        "--num_gpus",
+        type=int,
+        default=1,
+        help="Number of GPUs for parallel quantization (default: 1)"
     )
     quantize_parser.add_argument(
         "--resume",
@@ -140,6 +146,7 @@ Examples:
             mlp_only=mlp_only,
             block_size=args.block_size,
             device=args.device,
+            num_gpus=args.num_gpus,
             resume=args.resume,
             verbose=not args.quiet,
             calibrate=args.calibrate,

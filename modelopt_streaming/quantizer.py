@@ -2,6 +2,7 @@
 
 import json
 import shutil
+from multiprocessing import Pool
 from pathlib import Path
 from typing import Dict, Set, Optional
 
@@ -31,6 +32,7 @@ class StreamingQuantizer:
         mlp_only: bool = True,
         block_size: int = 16,
         device: str = "cuda:0",
+        num_gpus: int = 1,
         resume: bool = False,
         verbose: bool = True,
         calibrate: bool = False,
@@ -46,7 +48,8 @@ class StreamingQuantizer:
             format: Quantization format ('nvfp4', 'fp8', 'int4_awq')
             mlp_only: Quantize only MLP weights (faster, safer)
             block_size: Block size for group quantization (default: 16)
-            device: CUDA device for quantization kernels
+            device: CUDA device for quantization kernels (single-GPU mode)
+            num_gpus: Number of GPUs for parallel quantization (default: 1)
             resume: Resume from existing output shards
             verbose: Print progress information
             calibrate: Enable calibration for activation quantization (W4A4)
@@ -59,6 +62,7 @@ class StreamingQuantizer:
         self.mlp_only = mlp_only
         self.block_size = block_size
         self.device = device
+        self.num_gpus = num_gpus
         self.resume = resume
         self.verbose = verbose
         self.calibrate = calibrate
@@ -300,21 +304,162 @@ class StreamingQuantizer:
                 "quantization": quant_config["quantization"]
             }, f, indent=4)
     
+    @staticmethod
+    def _process_shard_worker(args_tuple):
+        """
+        Worker function for multi-GPU parallel processing.
+        
+        This must be a static method or module-level function to be picklable
+        for multiprocessing.
+        """
+        (
+            shard_file,
+            input_dir,
+            output_dir,
+            keys_to_quantize,
+            format_str,
+            mlp_only,
+            block_size,
+            gpu_id,
+            calibrator,
+            verbose,
+        ) = args_tuple
+        
+        # Re-create quantizer state in worker
+        from .formats import QuantizationFormat
+        
+        format_enum = QuantizationFormat(format_str)
+        device = f"cuda:{gpu_id}"
+        
+        # Setup backend
+        if format_enum == QuantizationFormat.NVFP4:
+            from modelopt.torch.quantization.qtensor import NVFP4QTensor
+            quantizer_class = NVFP4QTensor
+        else:
+            raise NotImplementedError(f"Format {format_enum} not yet implemented in worker")
+        
+        input_shard_path = input_dir / shard_file
+        output_shard_path = output_dir / shard_file
+        
+        if not input_shard_path.exists():
+            return (shard_file, None)
+        
+        # Process shard on assigned GPU
+        output_tensors = {}
+        
+        # Pre-pass: Find gate/up pairs and compute unified scale_2 for vLLM compatibility
+        gate_up_pairs = {}
+        unified_scale_2_map = {}
+        
+        with safe_open(input_shard_path, framework="pt", device="cpu") as f:
+            tensor_keys = list(f.keys())
+            
+            # Find gate/up pairs
+            for key in tensor_keys:
+                if key in keys_to_quantize:
+                    if "gate_proj.weight" in key:
+                        layer_prefix = key.rsplit("gate_proj.weight", 1)[0]
+                        if layer_prefix not in gate_up_pairs:
+                            gate_up_pairs[layer_prefix] = {}
+                        gate_up_pairs[layer_prefix]["gate"] = key
+                    elif "up_proj.weight" in key:
+                        layer_prefix = key.rsplit("up_proj.weight", 1)[0]
+                        if layer_prefix not in gate_up_pairs:
+                            gate_up_pairs[layer_prefix] = {}
+                        gate_up_pairs[layer_prefix]["up"] = key
+            
+            # Compute unified scale_2 for each pair
+            for layer_prefix, pair in gate_up_pairs.items():
+                if "gate" in pair and "up" in pair:
+                    gate_weight = f.get_tensor(pair["gate"]).to(device)
+                    up_weight = f.get_tensor(pair["up"]).to(device)
+                    
+                    gate_amax = gate_weight.abs().max()
+                    up_amax = up_weight.abs().max()
+                    unified_amax = torch.max(gate_amax, up_amax)
+                    
+                    # CRITICAL: Use EXACT formula from NVFP4QTensor.quantize
+                    # weight_scale_2 = amax / (maxbound * 448.0), where maxbound=6.0 for FP4
+                    unified_scale_2 = unified_amax / (6.0 * 448.0)
+                    unified_scale_2_map[pair["gate"]] = unified_scale_2.cpu()
+                    unified_scale_2_map[pair["up"]] = unified_scale_2.cpu()
+                    
+                    del gate_weight, up_weight
+                    torch.cuda.empty_cache()
+            
+            # Now quantize all weights
+            for key in tensor_keys:
+                if key in keys_to_quantize:
+                    # Quantize this weight
+                    weight = f.get_tensor(key)
+                    
+                    try:
+                        if format_enum == QuantizationFormat.NVFP4:
+                            # Use unified scale_2 if available (for gate/up)
+                            shared_scale_2 = unified_scale_2_map.get(key)
+                            
+                            packed_weight, weight_scale, weight_scale_2 = quantize_weight_nvfp4(
+                                weight,
+                                quantizer_class,
+                                block_size,
+                                device,
+                                shared_scale_2
+                            )
+                            
+                            # Store quantized weight and scales
+                            output_tensors[key] = packed_weight
+                            output_tensors[f"{key}_scale"] = weight_scale
+                            output_tensors[f"{key}_scale_2"] = weight_scale_2
+                            
+                            # Add input_scale (calibrated if available, else dummy)
+                            if calibrator:
+                                input_scale = calibrator.get_input_scale(key)
+                            else:
+                                input_scale = None
+                            
+                            if input_scale is None:
+                                input_scale = compute_dummy_input_scale(weight.shape)
+                            
+                            output_tensors[key.replace(".weight", ".input_scale")] = input_scale
+                        
+                        del weight
+                        torch.cuda.empty_cache()
+                        
+                    except Exception as e:
+                        if verbose:
+                            print(f"\nERROR quantizing {key}: {e}")
+                        # Fallback: copy original weight
+                        output_tensors[key] = f.get_tensor(key)
+                else:
+                    # Copy tensor as-is
+                    output_tensors[key] = f.get_tensor(key)
+        
+        # Save output shard
+        save_file(output_tensors, output_shard_path)
+        shard_meta = {k: v.shape for k, v in output_tensors.items()}
+        
+        # Free memory
+        torch.cuda.empty_cache()
+        
+        return (shard_file, shard_meta)
+    
     def run(self) -> None:
         """Execute the streaming quantization pipeline."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Run calibration if requested
+        # Run calibration if requested (always on cuda:0)
         if self.calibrate:
+            calib_device = "cuda:0"
             if self.verbose:
                 print(f"=== Calibration Enabled ===")
+                print(f"Device: {calib_device}")
                 print(f"Samples: {self.calib_size}")
                 print(f"Dataset: {self.calib_dataset}")
                 print()
             
             self.calibrator = StreamingCalibrator(
                 model_dir=self.input_dir,
-                device=self.device,
+                device=calib_device,
                 calib_size=self.calib_size,
                 batch_size=1,
                 dataset=self.calib_dataset,
@@ -334,7 +479,7 @@ class StreamingQuantizer:
             print(f"Calibration: {'Enabled' if self.calibrate else 'Disabled (weight-only)'}")
             print(f"Total keys: {len(self.weight_map)}")
             print(f"Keys to quantize: {len(keys_to_quantize)}")
-            print(f"Device: {self.device}")
+            print(f"Device: {self.device if self.num_gpus == 1 else f'cuda:0-{self.num_gpus-1} (parallel)'}")
             print()
         
         # Get unique shard files
@@ -349,39 +494,78 @@ class StreamingQuantizer:
             if completed_shards and self.verbose:
                 print(f"Resume: Found {len(completed_shards)} existing shards, skipping them.")
         
-        # Process each shard
+        # Process each shard (single-GPU or multi-GPU)
         shard_metadata = {}
         
-        for shard_file in tqdm(
-            shard_files,
-            desc="Processing shards",
-            disable=not self.verbose
-        ):
-            output_shard_path = self.output_dir / shard_file
-            
-            if shard_file in completed_shards:
-                # Load metadata from existing shard
+        # Load metadata from completed shards
+        if self.resume and completed_shards:
+            for shard_file in completed_shards:
+                output_shard_path = self.output_dir / shard_file
                 with safe_open(output_shard_path, framework="pt", device="cpu") as f:
                     shard_metadata[shard_file] = {k: f.get_tensor(k).shape for k in f.keys()}
-                continue
+        
+        # Get shards to process
+        shards_to_process = [s for s in shard_files if s not in completed_shards]
+        
+        if self.num_gpus == 1:
+            # Single-GPU mode (original sequential processing)
+            for shard_file in tqdm(
+                shards_to_process,
+                desc="Processing shards",
+                disable=not self.verbose
+            ):
+                input_shard_path = self.input_dir / shard_file
+                output_shard_path = self.output_dir / shard_file
+                
+                if not input_shard_path.exists():
+                    if self.verbose:
+                        print(f"\nWARNING: Input shard not found: {input_shard_path}")
+                    continue
+                
+                # Process shard
+                shard_meta = self.process_shard(
+                    input_shard_path,
+                    output_shard_path,
+                    keys_to_quantize,
+                )
+                shard_metadata[shard_file] = shard_meta
+                torch.cuda.empty_cache()
+        
+        else:
+            # Multi-GPU parallel processing
+            if self.verbose:
+                print(f"Using {self.num_gpus} GPUs for parallel quantization...")
             
-            input_shard_path = self.input_dir / shard_file
+            # Prepare worker arguments (round-robin GPU assignment)
+            worker_args = [
+                (
+                    shard_file,
+                    self.input_dir,
+                    self.output_dir,
+                    keys_to_quantize,
+                    self.format.value,
+                    self.mlp_only,
+                    self.block_size,
+                    i % self.num_gpus,  # GPU ID
+                    self.calibrator,
+                    self.verbose,
+                )
+                for i, shard_file in enumerate(shards_to_process)
+            ]
             
-            if not input_shard_path.exists():
-                if self.verbose:
-                    print(f"\nWARNING: Input shard not found: {input_shard_path}")
-                continue
+            # Process in parallel
+            with Pool(processes=self.num_gpus) as pool:
+                results = list(tqdm(
+                    pool.imap(self._process_shard_worker, worker_args),
+                    total=len(worker_args),
+                    desc="Processing shards (parallel)",
+                    disable=not self.verbose
+                ))
             
-            # Process shard
-            shard_meta = self.process_shard(
-                input_shard_path,
-                output_shard_path,
-                keys_to_quantize,
-            )
-            shard_metadata[shard_file] = shard_meta
-            
-            # Free memory
-            torch.cuda.empty_cache()
+            # Collect results
+            for shard_file, shard_meta in results:
+                if shard_meta is not None:
+                    shard_metadata[shard_file] = shard_meta
         
         # Build index
         if self.verbose:
