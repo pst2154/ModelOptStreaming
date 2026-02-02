@@ -5,6 +5,7 @@
 #SBATCH --time=24:00:00
 #SBATCH -A general_cs_infra
 #SBATCH -p batch_long
+#SBATCH --exclude=nvl72d012-T03
 #SBATCH --job-name=vllm-nvfp4
 #SBATCH --output=serve_nvfp4_%j.log
 #SBATCH --error=serve_nvfp4_%j.log
@@ -12,8 +13,8 @@
 set -e
 
 BASE_DIR=/lustre/fsw/portfolios/general/users/asteiner
-MODEL_PATH=${MODEL_PATH:-${BASE_DIR}/Kimi-K2.5-NVFP4-CALIBRATED-20260201_160933}
-SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-kimi-k2.5-nvfp4-calibrated-fixed}
+MODEL_PATH=${MODEL_PATH:-${BASE_DIR}/Kimi-K2.5-NVFP4-CALIBRATED-20260201_174511}
+SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-kimi-k2.5-nvfp4-fixed}
 SERVER_PORT=${SERVER_PORT:-8000}
 TP_SIZE=${TP_SIZE:-4}
 

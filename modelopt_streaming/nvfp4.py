@@ -33,6 +33,11 @@ def quantize_weight_nvfp4(
     """
     weight = weight.to(device)
     
+    # IMPORTANT: Model-Optimizer expects weight_scale_2 to be a float32 scalar on the
+    # same device as the weight tensor.
+    if shared_scale_2 is not None:
+        shared_scale_2 = shared_scale_2.to(device=device, dtype=torch.float32)
+    
     # Call NVFP4QTensor.quantize directly
     # This computes:
     #   - weight_scale_2 = global_max(|weight|) / (6.0 * 448.0)  [or use shared_scale_2]

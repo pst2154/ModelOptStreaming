@@ -162,9 +162,10 @@ class StreamingQuantizer:
                     
                     # CRITICAL: Use EXACT formula from NVFP4QTensor.quantize
                     # weight_scale_2 = amax / (maxbound * 448.0), where maxbound=6.0 for FP4
-                    unified_scale_2 = unified_amax / (6.0 * 448.0)
-                    unified_scale_2_map[pair["gate"]] = unified_scale_2.cpu()
-                    unified_scale_2_map[pair["up"]] = unified_scale_2.cpu()
+                    # Match Model-Optimizer export dtype exactly (float32 scalar).
+                    unified_scale_2 = unified_amax.float() / (6.0 * 448.0)
+                    unified_scale_2_map[pair["gate"]] = unified_scale_2.detach().cpu()
+                    unified_scale_2_map[pair["up"]] = unified_scale_2.detach().cpu()
                     
                     del gate_weight, up_weight
                     torch.cuda.empty_cache()
