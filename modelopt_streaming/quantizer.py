@@ -125,9 +125,46 @@ class StreamingQuantizer:
         """
         output_tensors = {}
         
+        # Pre-pass: Find gate/up pairs and compute unified scale_2 for vLLM compatibility
+        gate_up_pairs = {}
+        unified_scale_2_map = {}
+        
         with safe_open(input_path, framework="pt", device="cpu") as f:
-            tensor_keys = f.keys()
+            tensor_keys = list(f.keys())
             
+            # Find gate/up pairs
+            for key in tensor_keys:
+                if key in keys_to_quantize:
+                    if "gate_proj.weight" in key:
+                        layer_prefix = key.rsplit("gate_proj.weight", 1)[0]
+                        if layer_prefix not in gate_up_pairs:
+                            gate_up_pairs[layer_prefix] = {}
+                        gate_up_pairs[layer_prefix]["gate"] = key
+                    elif "up_proj.weight" in key:
+                        layer_prefix = key.rsplit("up_proj.weight", 1)[0]
+                        if layer_prefix not in gate_up_pairs:
+                            gate_up_pairs[layer_prefix] = {}
+                        gate_up_pairs[layer_prefix]["up"] = key
+            
+            # Compute unified scale_2 for each pair
+            for layer_prefix, pair in gate_up_pairs.items():
+                if "gate" in pair and "up" in pair:
+                    gate_weight = f.get_tensor(pair["gate"]).to(self.device)
+                    up_weight = f.get_tensor(pair["up"]).to(self.device)
+                    
+                    gate_amax = gate_weight.abs().max()
+                    up_amax = up_weight.abs().max()
+                    unified_amax = torch.max(gate_amax, up_amax)
+                    
+                    # Use same formula as NVFP4QTensor
+                    unified_scale_2 = unified_amax / 127.0
+                    unified_scale_2_map[pair["gate"]] = unified_scale_2.cpu()
+                    unified_scale_2_map[pair["up"]] = unified_scale_2.cpu()
+                    
+                    del gate_weight, up_weight
+                    torch.cuda.empty_cache()
+            
+            # Now quantize all weights
             for key in tqdm(
                 tensor_keys,
                 desc=f"Processing {input_path.name}",
@@ -140,11 +177,15 @@ class StreamingQuantizer:
                     
                     try:
                         if self.format == QuantizationFormat.NVFP4:
+                            # Use unified scale_2 if available (for gate/up)
+                            shared_scale_2 = unified_scale_2_map.get(key)
+                            
                             packed_weight, weight_scale, weight_scale_2 = quantize_weight_nvfp4(
                                 weight,
                                 self.quantizer_class,
                                 self.block_size,
-                                self.device
+                                self.device,
+                                shared_scale_2
                             )
                             
                             # Store quantized weight and scales

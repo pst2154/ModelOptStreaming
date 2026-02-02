@@ -1,5 +1,7 @@
 """NVFP4 quantization implementation using Model-Optimizer primitives."""
 
+from typing import Optional
+
 import torch
 
 
@@ -7,7 +9,8 @@ def quantize_weight_nvfp4(
     weight: torch.Tensor,
     NVFP4QTensor,
     block_size: int = 16,
-    device: str = "cuda:0"
+    device: str = "cuda:0",
+    shared_scale_2: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Quantize a single weight tensor to NVFP4 format.
@@ -20,6 +23,7 @@ def quantize_weight_nvfp4(
         NVFP4QTensor: Model-Optimizer's NVFP4QTensor class
         block_size: Block size for group quantization (default: 16)
         device: CUDA device for quantization kernels
+        shared_scale_2: Optional pre-computed weight_scale_2 (for w1/w3 vLLM compatibility)
         
     Returns:
         Tuple of:
@@ -31,14 +35,14 @@ def quantize_weight_nvfp4(
     
     # Call NVFP4QTensor.quantize directly
     # This computes:
-    #   - weight_scale_2 = global_max(|weight|) / (6.0 * 448.0)
+    #   - weight_scale_2 = global_max(|weight|) / (6.0 * 448.0)  [or use shared_scale_2]
     #   - weight_scale = per_block_max(|weight|) / (6.0 * weight_scale_2)
     #   - quantized = pack_to_fp4(weight / (weight_scale * weight_scale_2))
     quantized, weight_scale, weight_scale_2 = NVFP4QTensor.quantize(
         weight,
         block_size=block_size,
         weights_scaling_factor=None,  # Computed automatically
-        weights_scaling_factor_2=None,  # Computed automatically
+        weights_scaling_factor_2=shared_scale_2,  # Use shared if provided
         keep_high_precision=False,
     )
     
