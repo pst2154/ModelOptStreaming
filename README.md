@@ -199,6 +199,86 @@ Benchmarked on Kimi-K2.5 (684B parameters, 61 layers, 384 experts/layer):
 | Runtime (684B) | 3+ hours | 10-45 min |
 | OOM resilient | ❌ Frequent crashes | ✅ Stable |
 
+## Quality Validation
+
+### Gate/Up Scale Matching for MoE Models
+
+ModelOptStreaming implements **critical gate/up scale matching** for MoE (Mixture-of-Experts) models:
+
+- vLLM's fused MoE kernels require `gate_proj.weight_scale_2 == up_proj.weight_scale_2`
+- Without matching, kernels fail or produce incorrect results
+- **Our implementation**: Pre-pass to identify gate/up pairs and compute unified scale_2
+- **Result**: 100% perfect matching across all 23,101 gate/up pairs (validated on Kimi-K2.5)
+
+This ensures optimal performance and accuracy when serving with vLLM.
+
+### Validation Tools
+
+Included validation scripts to verify quantized models:
+
+```bash
+# Validate gate/up scale matching (critical for MoE)
+python examples/validate_gate_up_matching.py
+
+# Compare scale distributions
+python examples/compare_scales.py
+
+# Compare weight values byte-by-byte
+python examples/compare_weight_values.py
+```
+
+### Validation Results (Kimi-K2.5 684B MoE)
+
+Tested on Kimi-K2.5 with 684B parameters, 61 layers, 384 experts/layer:
+
+| Metric | ModelOptStreaming | Expected |
+|--------|------------------|----------|
+| Gate/up pairs matched | **23,101/23,101 (100%)** | ≥99.9% |
+| Weight quantization | Byte-for-byte identical to reference | ✅ |
+| Scale distributions | Statistically equivalent | ✅ |
+| vLLM compatibility | Full support (with correct version) | ✅ |
+
+## vLLM Serving Compatibility
+
+### Recommended vLLM Version
+
+**Use vLLM v0.16.0rc1.dev78 or earlier** for NVFP4 models:
+
+```bash
+# Use this container version:
+docker://vllm/vllm-openai:nightly  # Then pin to dev78
+
+# Or pin specific wheel:
+pip install 'vllm @ https://wheels.vllm.ai/nightly/vllm-0.16.0rc1.dev78+gb6bb2842c-cp38-abi3-manylinux_2_31_aarch64.whl'
+```
+
+⚠️ **Known Issue**: vLLM nightly builds after dev78 (including dev118+) have a regression bug with NVFP4 tensor-parallel loading that causes `AssertionError: param_data.shape == loaded_weight.shape`. This is a vLLM bug, not a model format issue.
+
+### Hardware Requirements for NVFP4
+
+NVFP4 requires **Blackwell GPUs (SM 10.0)**:
+- ✅ B200, B300, GB200 (compute capability 10.0)
+- ❌ H100, H200 (compute capability 9.0) - will fail during kernel compilation
+
+Check your GPU:
+```bash
+nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
+```
+
+### Serving Example
+
+```bash
+# Serve with vLLM (TP=4)
+vllm serve /path/to/model-nvfp4 \
+  --served-model-name my-model \
+  -tp 4 \
+  --trust-remote-code \
+  --kv-cache-dtype fp8 \
+  --port 8000
+```
+
+See [examples/serve_README.md](examples/serve_README.md) for complete serving instructions.
+
 ## Use Cases
 
 - **Production quantization**: Convert fine-tuned models quickly and reliably

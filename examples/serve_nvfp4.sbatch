@@ -40,10 +40,20 @@ export VLLM_CACHE_ROOT=${BASE_DIR}/.cache/vllm
 export XDG_CACHE_HOME=${BASE_DIR}/.cache
 export PIP_CACHE_DIR=${BASE_DIR}/.cache/pip
 
+# Pin to working vLLM version (before regression bug in dev118+)
+echo '=== Installing vLLM v0.16.0rc1.dev78 ==='
+pip install --no-cache-dir 'vllm @ https://wheels.vllm.ai/nightly/vllm-0.16.0rc1.dev78+gb6bb2842c-cp38-abi3-manylinux_2_31_aarch64.whl'
+
+echo ''
+echo '=== Verifying vLLM version ==='
+python -c 'import vllm; print(f\"vLLM version: {vllm.__version__}\")'
+
+echo ''
 echo '=== Starting vLLM server ==='
 echo 'Server will be available at http://'\$(hostname)':${SERVER_PORT}'
 echo 'Model: ${MODEL_PATH}'
 echo 'Quantization: NVFP4 (auto-detected from config.json)'
+echo 'Hardware required: SM 10.0 (Blackwell B200/B300/GB200)'
 echo ''
 
 vllm serve ${MODEL_PATH} \\
