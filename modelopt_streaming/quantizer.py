@@ -2,7 +2,7 @@
 
 import json
 import shutil
-from multiprocessing import Pool
+import multiprocessing
 from pathlib import Path
 from typing import Dict, Set, Optional
 
@@ -15,6 +15,10 @@ from .formats import QuantizationFormat, get_quantization_config
 from .patterns import should_quantize_tensor
 from .nvfp4 import quantize_weight_nvfp4, compute_dummy_input_scale
 from .calibration import StreamingCalibrator
+
+# CRITICAL: Set multiprocessing start method to 'spawn' for CUDA compatibility
+# The default 'fork' method cannot reinitialize CUDA in child processes
+multiprocessing.set_start_method('spawn', force=True)
 
 
 class StreamingQuantizer:
@@ -555,7 +559,7 @@ class StreamingQuantizer:
             ]
             
             # Process in parallel
-            with Pool(processes=self.num_gpus) as pool:
+            with multiprocessing.Pool(processes=self.num_gpus) as pool:
                 results = list(tqdm(
                     pool.imap(self._process_shard_worker, worker_args),
                     total=len(worker_args),
