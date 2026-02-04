@@ -13,6 +13,16 @@ from safetensors.torch import save_file
 from tqdm import tqdm
 
 
+def _is_text_only_key(key: str) -> bool:
+    """Check if a tensor key belongs to text-only model (not vision)."""
+    vision_patterns = [
+        "vision_model", "vision_projection", "vision_tower",
+        "mm_projector", "visual", "image_encoder", "vision_embed_tokens",
+    ]
+    key_lower = key.lower()
+    return not any(pattern in key_lower for pattern in vision_patterns)
+
+
 def _existing_shard_count(output_path: str) -> int:
     """Count existing output shards."""
     if not os.path.isdir(output_path):
@@ -60,7 +70,7 @@ def _expected_output_keys_for_file(model_path: str, input_file: str) -> List[str
     return out
 
 
-def _sanitize_config_for_bf16(output_path: str) -> None:
+def _sanitize_config_for_bf16(output_path: str, text_only: bool = False) -> None:
     """Remove quantization_config from config.json for BF16 models."""
     cfg_path = os.path.join(output_path, "config.json")
     if not os.path.exists(cfg_path):
@@ -83,6 +93,28 @@ def _sanitize_config_for_bf16(output_path: str) -> None:
         if isinstance(tc, dict) and "quantization_config" in tc:
             tc.pop("quantization_config", None)
             changed = True
+        
+        # Remove vision-related config if text_only
+        if text_only:
+            vision_config_keys = [
+                "vision_config", "mm_vision_tower", "vision_tower_aux_list",
+                "vision_feature_layer", "mm_projector_type",
+            ]
+            for key in vision_config_keys:
+                if key in cfg:
+                    cfg.pop(key, None)
+                    changed = True
+            
+            # Update architecture to text-only variant
+            if "architectures" in cfg:
+                old_archs = cfg["architectures"]
+                new_archs = [
+                    arch.replace("ForConditionalGeneration", "ForCausalLM")
+                    for arch in old_archs
+                ]
+                if new_archs != old_archs:
+                    cfg["architectures"] = new_archs
+                    changed = True
     
     if changed:
         tmp = cfg_path + ".tmp"
@@ -162,7 +194,7 @@ def unpack_int4_to_bf16_gpu(
 
 
 def decompress_file(
-    file_name: str, model_path: str, weight_map: Dict[str, str], device: str
+    file_name: str, model_path: str, weight_map: Dict[str, str], device: str, text_only: bool = False
 ) -> Dict[str, torch.Tensor]:
     """
     Process a single safetensor file and return decompressed weights.
@@ -172,6 +204,7 @@ def decompress_file(
         model_path: Path to input model directory
         weight_map: Weight-to-file mapping from index.json
         device: CUDA device for processing
+        text_only: If True, skip vision-related tensors
         
     Returns:
         Dictionary of decompressed tensors
@@ -184,6 +217,10 @@ def decompress_file(
         keys = list(f.keys())
         
         for weight_name in keys:
+            # Skip vision tensors if text_only mode
+            if text_only and not _is_text_only_key(weight_name):
+                continue
+            
             tensor = f.get_tensor(weight_name)
             
             if weight_name.endswith(".weight_packed"):
@@ -274,6 +311,7 @@ def decompress_model_incremental(
     output_path: str,
     num_gpus: int = 4,
     fresh: bool = False,
+    text_only: bool = False,
     verbose: bool = True,
 ) -> None:
     """
@@ -287,6 +325,7 @@ def decompress_model_incremental(
         output_path: Path to output BF16 model
         num_gpus: Number of GPUs to use for parallel processing
         fresh: If True, remove existing output and start fresh
+        text_only: If True, extract only text model (exclude vision components)
         verbose: Print progress messages
     """
     if verbose:
@@ -294,6 +333,7 @@ def decompress_model_incremental(
         print(f"Input:  {model_path}")
         print(f"Output: {output_path}")
         print(f"GPUs:   {num_gpus}")
+        print(f"Mode:   {'Text-only' if text_only else 'Full model'}")
         print()
     
     if fresh and os.path.exists(output_path):
@@ -358,7 +398,7 @@ def decompress_model_incremental(
         device = f"cuda:{(shard_idx - 1) % num_gpus}"
         
         # Decompress
-        results = decompress_file(file_name, model_path, weight_map, device)
+        results = decompress_file(file_name, model_path, weight_map, device, text_only=text_only)
         
         if not results:
             continue
@@ -427,8 +467,8 @@ def decompress_model_incremental(
     for py_file in Path(model_path).glob("*.py"):
         shutil.copy(py_file, output_path)
     
-    # Remove quantization_config from config.json
-    _sanitize_config_for_bf16(output_path)
+    # Remove quantization_config from config.json (and vision config if text_only)
+    _sanitize_config_for_bf16(output_path, text_only=text_only)
     
     if verbose:
         print()

@@ -1,19 +1,29 @@
 """Weight key pattern matching for selective quantization."""
 
+import fnmatch
 
-def should_quantize_tensor(key: str, mlp_only: bool = True) -> bool:
+
+def should_quantize_tensor(key: str, mlp_only: bool = True, exclude_modules: list = None) -> bool:
     """
     Determine if a tensor key should be quantized.
     
     Args:
         key: Tensor key from model weight map (e.g., "model.layers.0.mlp.down_proj.weight")
         mlp_only: If True, only quantize MLP weights; otherwise quantize all linear layers
+        exclude_modules: Optional list of glob patterns for modules to exclude from quantization
         
     Returns:
         True if the tensor should be quantized, False otherwise
     """
     if not key.endswith(".weight"):
         return False
+    
+    # Check against exclusion list if provided (e.g., from baseten's config)
+    if exclude_modules:
+        for pattern in exclude_modules:
+            # Support glob patterns (* wildcards)
+            if fnmatch.fnmatch(key, pattern) or fnmatch.fnmatch(key, pattern + "*"):
+                return False
     
     if mlp_only:
         # Only quantize MLP weights: down_proj, gate_proj, up_proj

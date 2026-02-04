@@ -34,6 +34,7 @@ class StreamingQuantizer:
         output_dir: str,
         format: str = "nvfp4",
         mlp_only: bool = True,
+        exclude_config: Optional[str] = None,
         block_size: int = 16,
         device: str = "cuda:0",
         num_gpus: int = 1,
@@ -51,6 +52,7 @@ class StreamingQuantizer:
             output_dir: Path to output quantized model directory
             format: Quantization format ('nvfp4', 'fp8', 'int4_awq')
             mlp_only: Quantize only MLP weights (faster, safer)
+            exclude_config: Path to JSON config with 'exclude_modules' list
             block_size: Block size for group quantization (default: 16)
             device: CUDA device for quantization kernels (single-GPU mode)
             num_gpus: Number of GPUs for parallel quantization (default: 1)
@@ -72,6 +74,23 @@ class StreamingQuantizer:
         self.calibrate = calibrate
         self.calib_size = calib_size
         self.calib_dataset = calib_dataset
+        
+        # Load exclusion patterns if provided
+        self.exclude_modules = None
+        if exclude_config:
+            try:
+                with open(exclude_config, "r") as f:
+                    exclude_config_data = json.load(f)
+                    # Try nested path first (baseten format: .quantization.exclude_modules)
+                    if "quantization" in exclude_config_data and "exclude_modules" in exclude_config_data["quantization"]:
+                        self.exclude_modules = exclude_config_data["quantization"]["exclude_modules"]
+                    # Fallback to top-level
+                    else:
+                        self.exclude_modules = exclude_config_data.get("exclude_modules", [])
+                    if self.verbose:
+                        print(f"Loaded {len(self.exclude_modules)} exclusion patterns from {exclude_config}")
+            except Exception as e:
+                raise ValueError(f"Failed to load exclude_config: {e}")
         
         # Calibration state
         self.calibrator: Optional[StreamingCalibrator] = None
@@ -111,7 +130,7 @@ class StreamingQuantizer:
         """Determine which weight keys should be quantized."""
         return {
             key for key in self.weight_map.keys()
-            if should_quantize_tensor(key, mlp_only=self.mlp_only)
+            if should_quantize_tensor(key, mlp_only=self.mlp_only, exclude_modules=self.exclude_modules)
         }
     
     def process_shard(
@@ -324,6 +343,7 @@ class StreamingQuantizer:
             keys_to_quantize,
             format_str,
             mlp_only,
+            exclude_modules,
             block_size,
             gpu_id,
             calibrator,
@@ -550,6 +570,7 @@ class StreamingQuantizer:
                     keys_to_quantize,
                     self.format.value,
                     self.mlp_only,
+                    self.exclude_modules,
                     self.block_size,
                     i % self.num_gpus,  # GPU ID
                     self.calibrator,

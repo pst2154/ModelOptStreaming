@@ -71,6 +71,15 @@ modelopt-streaming quantize \
   --calib_size 512 \
   --calib_dataset cnn_dailymail
 
+# With selective quantization (exclude specific layers, e.g., baseten strategy)
+modelopt-streaming quantize \
+  --input_dir /path/to/model-bf16 \
+  --output_dir /path/to/model-nvfp4 \
+  --format nvfp4 \
+  --mlp_only \
+  --exclude_config /path/to/reference-model/hf_quant_config.json \
+  --calibrate
+
 # Serve with vLLM
 vllm serve /path/to/model-nvfp4 \
   --quantization compressed_tensors \
@@ -81,6 +90,24 @@ modelopt-streaming decompress \
   --input_dir /path/to/model-int4 \
   --output_dir /path/to/model-bf16 \
   --num_gpus 4
+
+# Decompress INT4 to BF16 (text-only, exclude vision)
+modelopt-streaming decompress \
+  --input_dir /path/to/model-multimodal-int4 \
+  --output_dir /path/to/model-text-only-bf16 \
+  --num_gpus 4 \
+  --text-only
+
+# Extract exclusion patterns from a quantization config
+modelopt-streaming extract \
+  --config /path/to/hf_quant_config.json \
+  --verbose \
+  --output exclusion_patterns.txt
+
+# Extract text-only model from multimodal BF16 (no decompression)
+modelopt-streaming extract-text \
+  --input_dir /path/to/model-multimodal-bf16 \
+  --output_dir /path/to/model-text-only-bf16
 ```
 
 ### Python API
@@ -142,6 +169,28 @@ decompress_model_incremental(
 - **Requires calibration data**: Uses real samples to observe activation magnitudes
 - **Better accuracy**: <1% perplexity degradation vs BF16
 - **Use case**: Research, benchmarking, accuracy-critical deployments
+
+### Selective Quantization
+- **Exclude specific layers**: Use `--exclude_config` to replicate exclusion strategies from reference models
+- **Glob pattern support**: Supports wildcards like `model.layers.0*` to exclude groups of layers
+- **Use case**: Match quality of known-good quantized models (e.g., baseten NVFP4 models)
+
+Example: Extract and reuse exclusion patterns from a reference model:
+```bash
+# 1. Extract patterns from reference model
+modelopt-streaming extract \
+  --config /path/to/reference-model/hf_quant_config.json \
+  --verbose \
+  --output exclusion_patterns.txt
+
+# 2. Use patterns for your own quantization
+modelopt-streaming quantize \
+  --input_dir /path/to/your-model-bf16 \
+  --output_dir /path/to/your-model-nvfp4 \
+  --exclude_config /path/to/reference-model/hf_quant_config.json \
+  --mlp_only \
+  --calibrate
+```
 
 ## Performance
 
@@ -296,6 +345,8 @@ See [examples/serve_README.md](examples/serve_README.md) for complete serving in
 
 ## CLI Reference
 
+### Quantize Command
+
 ```bash
 modelopt-streaming quantize \
   --input_dir PATH          # Input BF16/FP16 model directory
@@ -303,12 +354,44 @@ modelopt-streaming quantize \
   --format {nvfp4,fp8}      # Quantization format (default: nvfp4)
   --mlp_only                # Quantize only MLP weights (default: True)
   --all_linear              # Quantize all linear weights (overrides --mlp_only)
+  --exclude_config PATH     # JSON config with exclude_modules list (selective quantization)
   --block_size INT          # Block size for group quantization (default: 16)
   --device DEVICE           # CUDA device (default: cuda:0)
+  --num_gpus INT            # Number of GPUs for parallel quantization (default: 1)
   --resume                  # Resume from existing output
   --calibrate               # Enable activation calibration (W4A4)
   --calib_size INT          # Number of calibration samples (default: 512)
   --calib_dataset NAME      # HuggingFace dataset for calibration (default: cnn_dailymail)
+```
+
+### Decompress Command
+
+```bash
+modelopt-streaming decompress \
+  --input_dir PATH          # Input INT4 (compressed-tensors) model directory
+  --output_dir PATH         # Output BF16 model directory
+  --num_gpus INT            # Number of GPUs for parallel decompression (default: 4)
+  --fresh                   # Remove existing output and start fresh
+  --text-only               # Extract text-only model (exclude vision components)
+  --quiet                   # Suppress progress output
+```
+
+### Extract Command (Exclusion Patterns)
+
+```bash
+modelopt-streaming extract \
+  --config PATH             # Quantization config file (hf_quant_config.json or config.json)
+  --verbose                 # Print all patterns (otherwise just summary)
+  --output PATH             # Save patterns to text file (one per line)
+```
+
+### Extract-Text Command (Text-Only Model)
+
+```bash
+modelopt-streaming extract-text \
+  --input_dir PATH          # Input multimodal BF16 model directory
+  --output_dir PATH         # Output text-only BF16 model directory
+  --quiet                   # Suppress progress output
 ```
 
 ## Roadmap
